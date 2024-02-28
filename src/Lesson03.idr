@@ -114,22 +114,55 @@ getEntry pos dataStore = case integerToFin pos (size dataStore) of
                               (Just x) => Just(index x (items dataStore))
 
 
-data Command = Add String | Get Integer
+data Command = Add String | Get Integer | Search String | Size
 
 parseCommand : String -> String -> Maybe Command
 parseCommand "add" str = Just (Add str)
 parseCommand "get" str = case all isDigit (unpack str) of
                               False => Nothing
                               True => Just (Get (cast str))
+parseCommand "search" str = Just (Search str)
+parseCommand "size" _ = Just (Size)
 parseCommand _ _ = Nothing
 
 parse : String -> Maybe Command
 parse str = case span (/= ' ') str of
                         (cmd, arg) => parseCommand cmd (ltrim arg)
 
+runSearch : String -> Vect n String -> List String
+runSearch str [] = []
+runSearch str (x :: xs) =
+     let sub = runSearch str xs 
+     in case isInfixOf str x of
+          True => x :: sub
+          False => sub
 
-processInput : DataStore -> String -> Maybe (String, DataStore)
-processInput x str = ?processInput_rhs
+concatStrings : List String -> String
+concatStrings [] = ""
+concatStrings (x :: xs) = x ++ "\n" ++ concatStrings xs
+
+runCommand : Command -> DataStore -> (String, DataStore)
+runCommand (Add str) dataStore = ("Added string " ++ str, addToStore dataStore str)
+runCommand (Get i) dataStore = case tryIndex i (items dataStore) of
+     Nothing => ("Could not find index " ++ show i, dataStore)
+     Just item => ("Item at index " ++ show i ++ ": " ++ item, dataStore)
+runCommand (Search str) dataStore =
+     let foundStrs = runSearch str (items dataStore)
+     in case foundStrs of
+          [] => ("No strings found", dataStore)
+          xs => ("Found strings:\n" ++ concatStrings foundStrs, dataStore)
+runCommand (Size) dataStore = ("Size: " ++ show (size dataStore), dataStore)
+
+processInput : DataStore -> String -> (String, DataStore)
+processInput dataStore input = case (parse input) of
+                                    Nothing => ("Unable to parse command", dataStore)
+                                    (Just x) => runCommand x dataStore
+
+addNewline : DataStore -> String -> Maybe (String, DataStore)
+addNewline dataStore str =
+  let (resultstr, resultDataStore) = processInput dataStore str
+  in
+     Just (resultstr ++ "\n", resultDataStore)
 
 -- put vienas
 -- put du
@@ -137,4 +170,4 @@ processInput x str = ?processInput_rhs
 
 covering
 main : IO ()
-main = replWith (emptyDataStore) ">>> " processInput
+main = replWith (emptyDataStore) ">>> " addNewline 
