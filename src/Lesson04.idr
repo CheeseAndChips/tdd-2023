@@ -71,8 +71,8 @@ toFormat (x :: xs) = Lit (pack [x]) (toFormat xs)
 infixr 5 .+.
 
 data Schema = SString
-           | SInt
-           | (.+.) Schema Schema
+            | SInt
+            | (.+.) Schema Schema
 
 SchemaType : Schema -> Type
 SchemaType SString = String
@@ -102,3 +102,82 @@ getEntry : (pos : Integer) -> (dataStore: DataStore) -> Maybe String
 getEntry pos dataStore = case integerToFin pos (size dataStore) of
                               Nothing => Nothing
                               (Just x) => Just(display(index x (items dataStore)))
+
+data Command : Schema -> Type where
+    Add : (val : SchemaType s) -> Command s
+    Get : (index : Integer) -> Command s
+    ChangeType : (sch : Schema) -> Command s
+
+Parser : Type -> Type
+Parser result_type = (List Char -> Maybe (List Char, result_type))
+
+parseChar : Char -> Parser Char
+parseChar c = (\inp => case inp of
+                            (c :: xs) => Just (xs, c)
+                            _ => Nothing)
+
+pairSwap : (a, b) -> (b, a)
+pairSwap (x, y) = (y, x)
+
+parseAlpha : Parser (List Char)
+parseAlpha = (\inp => Just $ pairSwap $ span (?isAlphaNumeric) inp)
+
+parseWithSchema' : List Char -> (sch : Schema) -> Maybe (SchemaType sch)
+parseWithSchema' str SString = do (r1, _) <- parseChar '"' str
+                                  (r2, str) <- parseAlpha r1
+                                  (r3, _) <- parseChar '"' r2
+                                  pure (pack str)
+parseWithSchema' str SInt = ?hle_1
+parseWithSchema' str (x .+. y) = ?hle_2
+
+parseWithSchema : (str : String) -> (sch : Schema) -> Maybe (SchemaType sch)
+parseWithSchema str sch = case parseWithSchema' (unpack str) sch of
+                            ([], new_schema) => Just new_schema
+                            _ => Nothing
+
+parseCommand : String -> String -> (s : Schema) -> Maybe (Command s)
+parseCommand "add" str sch = Just (Add (parseWithSchema str sch))
+parseCommand "get" str _ = case all isDigit (unpack str) of
+                              False => Nothing
+                              True => Just (Get (cast str))
+parseCommand "change" str _ = ?parseSchema
+parseCommand _ _ _ = Nothing
+
+parse : String -> (s: Schema) -> Maybe (Command s)
+parse str = case span (/= ' ') str of
+                        (cmd, arg) => parseCommand cmd (ltrim arg)
+
+runCommand : (dataStore : DataStore) -> Command (schema dataStore) -> (String, DataStore)
+runCommand dataStore (Add val) = ("Added", addToStore dataStore val)
+runCommand dataStore (Get index) = case getEntry index dataStore of
+                                        Nothing => ("Not found", dataStore)
+                                        Just s => (s, dataStore)
+runCommand dataStore (ChangeType sch) = case size dataStore of
+                                            Z => ("Changed", MkData sch Z [])
+                                            _ => ("Cannot change non-empty", dataStore)
+
+runLine : String -> DataStore -> Maybe (String, DataStore)
+runLine str dataStore = do cmd <- parse str (schema dataStore)
+                           pure $ runCommand dataStore cmd
+
+-- runCommand : {sch : Schema} -> Command sch -> DataStore -> (String, DataStore)
+-- runCommand {sch} (Add value) dataStore = ("Added string", (addToStore dataStore ?hle))
+-- runCommand _ _ = ?hle2
+-- runCommand (Get i) dataStore = case tryIndex i (items dataStore) of
+--      Nothing => ("Could not find index " ++ show i, dataStore)
+--      Just item => ("Item at index " ++ show i ++ ": " ++ item, dataStore)
+
+-- processInput : DataStore -> String -> (String, DataStore)
+-- processInput dataStore input = case (parse input) of
+--                                     Nothing => ("Unable to parse command", dataStore)
+--                                     (Just x) => runCommand x dataStore
+
+-- addNewline : DataStore -> String -> Maybe (String, DataStore)
+-- addNewline dataStore str =
+--   let (resultstr, resultDataStore) = processInput dataStore str
+--   in
+--      Just (resultstr ++ "\n", resultDataStore)
+
+-- covering
+-- main : IO ()
+-- main = replWith (emptyDataStore) ">>> " addNewline 
