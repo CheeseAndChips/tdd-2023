@@ -42,3 +42,28 @@ isEl value (x :: xs) = case decEq value x of
                                                    (Yes prf) => Yes (There prf)
                                                    (No notThere) => No (notInTail notHere notThere)
 
+data Last : List a -> a -> Type where
+    LastOne : Last [value] value
+    LastCons : (prf : Last xs value) -> Last (x :: xs) value
+
+notLastInNil : Last [] value -> Void
+notLastInNil x impossible
+
+aa : (x = value -> Void) -> Last [x] value -> Void
+aa f LastOne = f Refl
+aa _ (LastCons LastOne) impossible
+aa _ (LastCons (LastCons prf)) impossible
+
+bb : (Last (x :: xs) value -> Void) -> Last (y :: (x :: xs)) value -> Void
+bb f (LastCons prf) = f prf
+
+isLast : DecEq a => (xs : List a) -> (value : a) -> Dec (Last xs value)
+isLast [] value = No notLastInNil
+isLast (x :: []) value = case decEq x value of
+                            (Yes prf) => rewrite prf in Yes LastOne
+                            (No contra) => No (aa contra)
+isLast (x :: l @ (y :: xs)) value = case isLast l value of --case isLast (y :: xs) value of -- Yes $ LastCons (isLast (y :: xs) value)
+                                        (Yes prf) => Yes (LastCons prf)
+                                        (No contra) => No $ bb contra
+                            -- (Yes prf) => Yes (LastCons (prf))
+                            -- (No contra) => No (bb contra)
