@@ -134,13 +134,24 @@ namespace MaxAsPredicate
         (S val ** MaxX prf)
 
 namespace MaxAsSo
+    fixDoubleNeg : {a : Bool} -> So (not (not a)) -> So a
+    fixDoubleNeg {a=False} x impossible -- = ?aa -- x
+    fixDoubleNeg {a=True} x = Oh
+
+    invertCmp : {a : Nat} -> {b : Nat} -> So (compareNat a b == LT) -> So (compareNat b a == GT)
+    invertCmp {a = 0} {b = 0} x = x
+    invertCmp {a = 0} {b = (S k)} x = x
+    invertCmp {a = (S k)} {b = 0} x = x
+    invertCmp {a = (S k)} {b = (S j)} x = invertCmp x
+
+    lol : (b : Nat) -> (a : Nat) -> So (not (not (compareNat a b == LT))) -> So (compareNat b a == GT)
+    lol b a x = let fixed = fixDoubleNeg x
+                in invertCmp fixed
 
     max5 : (a : Nat) -> (b : Nat) -> (m : Nat ** Either (m = a, So (m >= b)) (m = b, So (m > a)))
     max5 a b = case choose (a >= b) of
                     (Left x) => (a ** Left (Refl, x))
-                    (Right x) => ?max5_rhs_1
+                    (Right x) => (b ** Right (Refl, lol b a x))
 
     data Maax : Type where
         Maa0 : Maax -> Maax
-
-
