@@ -26,6 +26,10 @@ doAdd = do  v1 <- Pop
             v2 <- Pop
             Push (v1 + v2)
 
+tst : (Vect (S l) b) -> (b, Vect l b)
+-- tst xs = ?asdasd
+tst (x :: xs) = (x, xs)
+
 run : (st : Vect h1 Integer) -> (StackCmd ty h1 h2) -> (ty, Vect h2 Integer)
 run st (Push i) = ((), i :: st)
 run (x :: xs) Pop = (x, xs)
