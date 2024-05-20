@@ -20,8 +20,7 @@ StringOrInt False = Int
 StringOrInt True = String
 
 strOrInt : (x: Bool) -> StringOrInt (not x)
-strOrInt False = "labas"
-strOrInt True = 42
+strOrInt x = ?FFF
 
 sar : List Int
 sar = []
@@ -31,7 +30,7 @@ len [] = 0
 len (_ :: xs) = 1 + len xs
 
 prodComm : {a: Type} -> {b: Type} -> (a,b) -> (b,a)
-prodComm (x, y) = (y, x)
+prodComm (x, y) = ?abc
 
 public export
 
