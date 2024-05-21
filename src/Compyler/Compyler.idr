@@ -1,12 +1,21 @@
 module Compyler.Compyler
 
+import Compyler.CodeObject
+
 import Data.Vect
 import Data.Vect.Elem
+import Data.String
+import Data.Bits
+import System.File
+import Data.Primitives.Views
 
 %default total
 
+CompileError : Type
+CompileError = String
+
 data PyBinaryOp = Add | Subtract | Multiply | Divide
-data PyConst = PyString String | PyInt Integer | PyNone
+data PyConst = PyString String | PyInt Bits32 | PyNone
 data PyVarHandle : Vect n PyConst -> Type where
     MkPyVarHandle : {xs : Vect n PyConst} -> (const : PyConst) -> (i : Elem const xs) -> PyVarHandle xs
 -- data PyData = PyConstData PyConst | PyVar PyVarHandle
@@ -20,24 +29,6 @@ data PyBytecode : (consts : Vect n PyConst) -> Type where
     -- RETURN_CONST Nat
     -- BINARY_OP PyBinaryOp
 
-data PySerializedBytecode : (consts : Vect n PyConst) -> Type where
-    MkSerializedBytecode : (consts : Vect n PyConst) -> (proofs : Vect n (Elem x consts)) -> (bytecode : Vect m (PyBytecode consts)) -> PySerializedBytecode consts
-
-addOneConst : PySerializedBytecode c1 -> (new_const : PyConst) -> PySerializedBytecode (new_const :: c1)
-addOneConst (MkSerializedBytecode c1 proofs bytecode) new_const = MkSerializedBytecode ?ad ?cd ?ef
-
-addToBytecode : PySerializedBytecode c1 -> (new_consts : Vect m PyConst) -> (new_bytecode : Vect m PyConst) -> PySerializedBytecode (c1 ++ new_consts)
-addToBytecode (MkSerializedBytecode c1 proofs bytecode) [] new_bytecode = ?abcd_0
-addToBytecode (MkSerializedBytecode c1 proofs bytecode) (x :: xs) new_bytecode = ?adasdasd
-
--- record PyCode where
---     constructor MkPyCode
---     variables : Vect n_var PyVarHandle
---     code : Vect n_code PyBytecode
-
-
--- 
-
 data PyOperation : Type -> (consts_old : Vect n1 PyConst) -> (consts_new : Vect n2 PyConst) -> Type where
     -- PyCreateConst : (value : PyConst) -> PyOperation (PyVarHandle (value :: c1)) c1 (value :: c1)
     PyCreateConsts : (values : Vect n2 PyConst) -> PyOperation (Vect n2 (PyVarHandle values)) [] values
@@ -47,16 +38,124 @@ data PyOperation : Type -> (consts_old : Vect n1 PyConst) -> (consts_new : Vect 
     -- PyAssign : (value : PyVarHandle) -> PyOperation PyVarHandle c1 c1
     -- PyBinary : (v1 : PyData) -> (op : PyBinaryOp) -> (v2 : PyData) -> PyOperation PyVarHandle consts
 
--- mkconststr : (s : String) -> PyOperation (PyVarHandle (PyString s :: c1)) c1 (PyString s :: c1)
--- mkconststr s = PyCreateConst (PyString s)
+record PyCodeObject where
+  constructor MkPyCodeObject
+  argcount : Bits32
+  posonlyargcount : Bits32
+  kwonlyargcount : Bits32
+  stacksize : Bits32
+  flags : Bits32
+  code : List (Bits8)
+  consts : Vect n_consts PyConst
+  names : Vect n_names String
+  localsplusnames : Vect n_locals String
+  localspluskinds : Vect n_locals Bits8
+  filename : String
+  name : String
+  qualname : String
+  firstlineno : Bits32
+  linetable : Vect n_line Bits8
+  exceptiontable : Vect n_exc Bits8
 
-compileProgram : {xs : Vect n PyConst} -> PyOperation a [] xs -> Vect n String
-compileProgram {xs} _ = map (\c => case c of
-                                        (PyString str) => str
-                                        (PyInt i) => show i
-                                        PyNone => "None"
-                            ) xs
+getFlag : Char -> Bits8
+getFlag c = (cast c) .|. 0x80
 
+interface PySerializable a where
+  serializeWithoutFlag : a -> List Bits8
+  serializeWithFlag : a -> List Bits8
+
+toLittleEndian : Bits32 -> Vect 4 Bits8
+toLittleEndian m = let b32 = [m .&. 0xff,
+                             (shiftR m 8) .&. 0xff,
+                             (shiftR m 16) .&. 0xff,
+                             (shiftR m 24) .&. 0xff]
+                   in map cast b32
+
+getLenList : (len : Nat) -> List Bits8
+getLenList len = let len = toLittleEndian (cast $ len)
+                 in case len of
+                          [x, 0, 0, 0] => [x]
+                          xs           => toList xs
+
+PySerializable Bits32 where
+  serializeWithoutFlag x = toList (toLittleEndian x)
+  serializeWithFlag x = getFlag 'i' :: serializeWithoutFlag x
+
+PySerializable (List Bits8) where
+  serializeWithoutFlag x = toList (toLittleEndian (cast $ length x)) ++ x
+  serializeWithFlag x = getFlag 's' :: serializeWithoutFlag x
+
+PySerializable (Vect _ Bits8) where
+  serializeWithoutFlag x = serializeWithoutFlag $ toList x
+  serializeWithFlag x = serializeWithFlag $ toList x
+
+convertStrToBytes : AsList str -> List Bits8
+convertStrToBytes [] = []
+convertStrToBytes (c :: x) = (cast c) :: convertStrToBytes x
+
+PySerializable String where
+  serializeWithoutFlag x = getLenList (length x) ++ (convertStrToBytes $ asList x)
+  serializeWithFlag x = (getFlag (if length x < 256 then 'Z' else 'a')) :: serializeWithoutFlag x
+
+PySerializable PyConst where
+  serializeWithoutFlag (PyString str) = serializeWithoutFlag str
+  serializeWithoutFlag (PyInt m) = serializeWithoutFlag m
+  serializeWithoutFlag PyNone = []
+
+  serializeWithFlag (PyString str) = serializeWithFlag str
+  serializeWithFlag (PyInt i) = serializeWithFlag i
+  serializeWithFlag PyNone = [cast 'N']
+
+PySerializable (Vect _ Bits32) where
+  serializeWithoutFlag x = let len = toLittleEndian (cast $ length x)
+                               len_buffer = case len of
+                                                [x, 0, 0, 0] => [x]
+                                                xs =>           toList xs
+                           in len_buffer ++ (intercalate [] (toList $ map serializeWithFlag x))
+  serializeWithFlag x = (getFlag (if length x < 256 then ')' else '(')) :: serializeWithoutFlag x
+
+PySerializable (Vect _ String) where
+  serializeWithoutFlag x = let len = toLittleEndian (cast $ length x)
+                               len_buffer = case len of
+                                                [x, 0, 0, 0] => [x]
+                                                xs =>           toList xs
+                           in len_buffer ++ (intercalate [] (toList $ map serializeWithFlag x))
+  serializeWithFlag x = (getFlag (if length x < 256 then ')' else '(')) :: serializeWithoutFlag x
+
+PySerializable (Vect _ PyConst) where
+  serializeWithoutFlag x = let len = toLittleEndian (cast $ length x)
+                               len_buffer = case len of
+                                                [x, 0, 0, 0] => [x]
+                                                xs =>           toList xs
+                           in len_buffer ++ (intercalate [] (toList $ map serializeWithFlag x))
+  serializeWithFlag x = (getFlag (if length x < 256 then ')' else '(')) :: serializeWithoutFlag x
+
+PySerializable PyCodeObject where
+  serializeWithoutFlag x = let xs = [serializeWithoutFlag (x.argcount),
+                                     serializeWithoutFlag (x.posonlyargcount),
+                                     serializeWithoutFlag (x.kwonlyargcount),
+                                     serializeWithoutFlag (x.stacksize),
+                                     serializeWithoutFlag (x.flags),
+                                     serializeWithFlag (x.code),
+                                     serializeWithFlag (x.consts),
+                                     serializeWithFlag (x.names),
+                                     serializeWithFlag (x.localsplusnames),
+                                     serializeWithFlag (x.localspluskinds),
+                                     serializeWithFlag (x.filename),
+                                     serializeWithFlag (x.name),
+                                     serializeWithFlag (x.qualname),
+                                     serializeWithoutFlag (x.firstlineno),
+                                     serializeWithFlag (x.linetable),
+                                     serializeWithFlag (x.exceptiontable)]
+                           in intercalate [] xs
+  serializeWithFlag x = (getFlag 'c') :: serializeWithoutFlag x
+
+
+serializeCodeObject : PyCodeObject -> Either CompileError (List Bits8)
+serializeCodeObject x = ?serializeCodeObject_rhs
+
+getVarHandleIndex : {xs : Vect n _} -> PyVarHandle xs -> Nat
+getVarHandleIndex (MkPyVarHandle _ i) = finToNat $ elemToFin i
 
 createVarHandles : (xy : Vect n PyConst) -> Vect n (PyVarHandle xy)
 createVarHandles [] = []
@@ -64,39 +163,42 @@ createVarHandles (x :: xs) = (MkPyVarHandle x Here :: (map (\(MkPyVarHandle y ys
 
 turnToBytecode : (consts : Vect n PyConst) -> PyOperation a xs xy -> (a, List (PyBytecode xy))
 turnToBytecode consts (PyCreateConsts xy) = (createVarHandles xy, [])
-turnToBytecode consts (PyReturn value) = ((), [LOAD_CONST value])
+turnToBytecode consts (PyReturn value) = ((), [LOAD_CONST value, RETURN])
 turnToBytecode consts (x >>= f) = let (a', code) = turnToBytecode consts x in turnToBytecode consts (f a')
 turnToBytecode consts (x >> y) = let (a', code) = turnToBytecode consts x in turnToBytecode consts y
 
 compile : {n : _} -> {xs : Vect n PyConst} -> PyOperation () [] xs -> List (PyBytecode xs)
-compile {xs} x = let (a, b) = turnToBytecode xs x in [RESUME] ++ b ++ [RETURN]
+compile {xs} x = let (a, b) = turnToBytecode xs x in [RESUME] ++ b
 
-compiled = compile       $  do consts <- PyCreateConsts [
-                                                PyString "sveikas",
-                                                PyString "pasauli"
-                                            ]
-                               PyReturn (index 1 consts)
+serializeSingleInstruction : {xs : _} -> PyBytecode xs -> Either CompileError (List Bits8)
+serializeSingleInstruction RESUME = Right [0x97, 0x00]
+serializeSingleInstruction {xs} (LOAD_CONST x) = let n = getVarHandleIndex x
+                                                 in if n < 256 then Right [0x64, cast n]
+                                                    else Left "Too many constants"
+serializeSingleInstruction RETURN = Right [0x53, 0x00]
 
+createBinary : {xs : Vect n PyConst} -> List (PyBytecode xs) -> Either CompileError (List Bits8)
+createBinary [] = Right []
+createBinary (x :: ys) = do instr <- serializeSingleInstruction x
+                            others <- createBinary ys
+                            pure (instr ++ others)
 
--- testProg : {xs : Vect _ _} -> PyOperation () [] xs
--- testProg {xs} = do PyStart
---                    var1 <- mkconststr "sveikas"
---                    var2 <- mkconststr "pasauli"
---                    PyReturn (PyVar var1)
+program =  do consts <- PyCreateConsts [
+                            PyString "sveikas",
+                            PyString "pasauli",
+                            PyInt 42
+                        ]
+              PyReturn (index 2 consts)
 
--- tryGettingValue : PyData -> List PyConst
--- tryGettingValue (PyConstData x) = [x]
--- tryGettingValue (PyVar x) = []
+getConsts : {ys : Vect n PyConst} -> PyOperation () [] ys -> Vect n PyConst
+getConsts _ = ys
 
--- parseConsts : PyOperation a -> List PyConst -> List PyConst
--- parseConsts (PyAssign value) xs = tryGettingValue value :: xs
--- parseConsts (PyBinary v1 op v2) xs = ?parseConsts_rhs_1
--- parseConsts (PyReturn value) xs = ?parseConsts_rhs_2
--- parseConsts (x >>= f) xs = ?parseConsts_rhs_3
--- parseConsts (x >> y) xs = ?parseConsts_rhs_4
+compiled = compile program
+binaryInstr = createBinary compiled
+programConsts = getConsts program
 
--- compile : PyOperation () -> PyCode
--- compile op = let consts = parseConsts op
---              in MkPyCode [] []
--- 
+main : IO ()
+main = case binaryInstr of
+               (Left err) => putStrLn err
+               (Right xs) => putStrLn (show (serializeWithFlag $ MkPyCodeObject 0 0 0 2 3 xs programConsts [] [] [] "<string>" "func" "func" 1 [] []))
 
