@@ -9,6 +9,8 @@ if '-d' in sys.argv:
     print(lst)
     print(code)
     dis.dis(code)
+    print(list(code.co_code))
+    print(code.co_code)
     print('\n\n---------------')
 
 print(eval(code))

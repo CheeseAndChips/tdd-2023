@@ -4,8 +4,8 @@ import Data.Vect
 
 %default total
 
-data StackCmd : Type -> Nat -> Nat -> Type where
-    Push : Integer -> StackCmd () l (S l)
+data StackCmd : Type -> Vect n1 Integer -> Vect n2 Integer -> Type where
+    Push : Integer -> StackCmd () cs (S l)
     Pop : StackCmd Integer (S l) l
     Top : StackCmd Integer (S l) (S l)
     Pure : a -> StackCmd a l l

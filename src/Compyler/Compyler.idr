@@ -30,13 +30,14 @@ data PyBytecode : (consts : Vect n PyConst) -> Type where
     RESUME : PyBytecode consts
     LOAD_CONST : (PyVarHandle consts) -> PyBytecode consts
     RETURN : PyBytecode consts
+    BINARY_OP : (op : PyBinaryOp) -> PyBytecode consts
     -- MAKE_FUNCTION
     -- STORE_NAME Nat
     -- RETURN_CONST Nat
-    -- BINARY_OP PyBinaryOp
 
 data PyOperation : Type -> (consts : Vect n PyConst) -> Type where
     PyReturnConst : (name : String) -> {auto prf : ElemInConsts name consts} -> PyOperation () consts
+    PyReturnBinary : (c1 : String) -> (op : PyBinaryOp) -> (c2 : String) -> {auto prf1 : ElemInConsts c1 consts} -> {auto prf2 : ElemInConsts c2 consts} -> PyOperation () consts
     (>>=) : PyOperation a consts -> (a -> PyOperation b consts) -> PyOperation b consts
     (>>) : PyOperation a consts -> PyOperation b consts -> PyOperation b consts
     -- PyCreateConsts : (values : Vect n2 PyConst) -> PyOperation (Vect n2 (PyVarHandle values)) [] values
@@ -170,10 +171,11 @@ getVarHandleIndex MkHere = 0
 getVarHandleIndex (MkThere x) = S (getVarHandleIndex x)
 
 appendBytecode : (a, List (PyBytecode c)) -> List (PyBytecode c) -> (a, List (PyBytecode c))
-appendBytecode (x, y) xs = (x, y ++ xs)
+appendBytecode (x, y) xs = (x, xs ++ y)
 
 turnToBytecode : (consts : Vect n PyConst) -> PyOperation a consts -> (a, List (PyBytecode consts))
 turnToBytecode consts (PyReturnConst _ {prf}) = ((), [LOAD_CONST (getVarHandle prf), RETURN])
+turnToBytecode consts (PyReturnBinary _ op _ {prf1} {prf2}) = ((), [LOAD_CONST (getVarHandle prf1), LOAD_CONST (getVarHandle prf2), BINARY_OP op, RETURN])
 turnToBytecode consts (x >>= f) = let (a', code) = turnToBytecode consts x in appendBytecode (turnToBytecode consts (f a')) code
 turnToBytecode consts (x >> y) = let (a', code) = turnToBytecode consts x in appendBytecode (turnToBytecode consts y) code
 
@@ -187,6 +189,7 @@ serializeSingleInstruction {xs} (LOAD_CONST (MkPyVarHandle _ i)) = let n = getVa
                                                                    in if n < 256 then Right [0x64, cast n]
                                                                       else Left "Too many constants"
 serializeSingleInstruction RETURN = Right [0x53, 0x00]
+serializeSingleInstruction (BINARY_OP op) = Right [0x7a, 0x00, 0x00, 0x00]
 
 createBinary : {xs : Vect n PyConst} -> List (PyBytecode xs) -> Either CompileError (List Bits8)
 createBinary [] = Right []
@@ -197,23 +200,20 @@ createBinary (x :: ys) = do instr <- serializeSingleInstruction x
 getConsts : (prog : PyProgram n c _) -> Vect n PyConst
 getConsts (MkPyProgram c _) = c
 
-namespace Prog
-  (:-) : String -> String -> PyConst
-  (:-) name c = MkPyConst name (PyString c)
-  private infix 5 :-
+(:-) : String -> String -> PyConst
+(:-) name c = MkPyConst name (PyString c)
+private infix 5 :-
 
-  program = MkPyProgram [
-                  "c2" :- "Sveikas",
-                  "c1" :- ", Pasauli!"
-            ] (do PyReturnConst "c2"
-                  PyReturnConst "c1"
-              )
+program = MkPyProgram [
+              "Dievas" :- "H. Giedra",
+              "DBVS3" :- "pasol nx"
+          ] (do PyReturnBinary "Dievas" Add "DBVS3")
 
-  public export
-  main : IO ()
-  main = let (programConsts, compiled) = compile program
-             binaryInstr = createBinary compiled
-         in case binaryInstr of
-                 (Left err) => putStrLn err
-                 (Right xs) => putStrLn (show (serializeWithFlag $ MkPyCodeObject 0 0 0 2 3 xs programConsts [] [] [] "<string>" "func" "func" 1 [] []))
+public export
+main : IO ()
+main = let (programConsts, compiled) = compile program
+           binaryInstr = createBinary compiled
+       in case binaryInstr of
+               (Left err) => putStrLn err
+               (Right xs) => putStrLn (show (serializeWithFlag $ MkPyCodeObject 0 0 0 2 3 xs programConsts [] [] [] "<string>" "func" "func" 1 [] []))
 
