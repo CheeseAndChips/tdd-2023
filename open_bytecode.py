@@ -14,4 +14,6 @@ if '-d' in sys.argv:
     dis.dis(code)
     print('\n\n---------------')
 
-print(eval(code))
+res = eval(code)
+print('-----')
+print(res)

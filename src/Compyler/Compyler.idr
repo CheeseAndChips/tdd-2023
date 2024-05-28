@@ -22,8 +22,6 @@ record PyContext where
   consts : Vect n_consts PyConst
   vars : Vect n_vars PyVar
 
--- constProofType : (const : PyConst) -> (context : PyContext) -> Type
-
 getConstStringVect : Vect n PyConst -> Vect n String
 getConstStringVect [] = []
 getConstStringVect ((MkPyConst str _) :: xs) = str :: getConstStringVect xs
@@ -37,10 +35,6 @@ getVarStringVect ((MkPyVar str) :: xs) = str :: getVarStringVect xs
 
 varElemPrf : String -> PyContext -> Type
 varElemPrf name context = Elem name (getVarStringVect (vars context))
-
--- getPyRHSProofType : (rhs : PyRHS) -> (context : PyContext) -> Type
--- getPyRHSProofType (MkPyRHSConst x) context = constProofType x -- Elem x consts
--- getPyRHSProofType (MkPyRHSVar x) context = ?asdasd --Elem x vars
 
 data PyVarHandle : (context : PyContext) -> Type where
   MkPyVarHandle : (v : String) -> (prf : varElemPrf v context) -> PyVarHandle context
@@ -56,10 +50,11 @@ data PyBytecode : (context : PyContext) -> Type where
     RETURN : PyBytecode _
     BINARY_OP : (op : PyBinaryOp) -> PyBytecode _
     JUMP_FORWARD : (cnt : Nat) -> PyBytecode _
+    JUMP_BACKWARD : (cnt : Nat) -> PyBytecode _
     POP_JUMP_IF_FALSE : (cnt : Nat) -> PyBytecode _
-    -- MAKE_FUNCTION
-    -- STORE_FAST Nat
-    -- RETURN_CONST Nat
+    PUSH_NULL : PyBytecode _
+    CALL : PyBytecode _
+    POP_TOP : PyBytecode _
 
 mutual
   data PyRHS : (context : PyContext) -> Type where
@@ -73,6 +68,8 @@ mutual
       PyReturn : (rhs : PyRHS context) -> PyOperation () context
       PyAssignToVar : (v : PyVarHandle context) -> (rhs : PyRHS context) -> PyOperation () context
       PyIf : (cond : PyRHS context) -> (true_op : PyOperation () context) -> (false_op : PyOperation () context) -> PyOperation () context
+      PyWhile : (cond : PyRHS context) -> (op : PyOperation () context) -> PyOperation () context
+      PyPrint : (rhs : PyRHS context) -> {auto prf : varElemPrf "print" context} -> PyOperation () context
       Pure : a -> PyOperation a context
       (>>=) : PyOperation a context -> (a -> PyOperation b context) -> PyOperation b context
       (>>) : PyOperation a context -> PyOperation b context -> PyOperation b context
@@ -98,14 +95,6 @@ record PyCodeObject where
   firstlineno : Bits32
   linetable : Vect n_line Bits8
   exceptiontable : Vect n_exc Bits8
-
--- getVarHandle : {xs, c : _} -> (i : ElemInConsts c xs) -> PyVarHandle xs
--- getVarHandle {c} i = MkPyVarHandle c i
--- 
--- getVarHandleIndex : ElemInConsts c xs -> Nat
--- getVarHandleIndex MkHere = 0
--- getVarHandleIndex (MkThere x) = S (getVarHandleIndex x)
-
 
 PySerializable PyData where
   serializeWithoutFlag (PyString str) = serializeWithoutFlag str
@@ -152,11 +141,6 @@ maxList : Vect (S n) Nat -> Nat
 maxList [x] = x
 maxList (x :: (y :: xs)) = max (maxList (y :: xs)) x
 
--- stackUsage : {n1, n2 : _} -> Nat -> PyOperation n1 n2 context -> Nat
--- stackUsage k (x >>= f) = maxList [n1, n2, k, stackUsage k x]
--- stackUsage k (x >> y) = ?asdasd_6
--- stackUsage k _ = maxList [n1, n2, k]
-
 getRHSBytecode : (context : PyContext) -> PyRHS context -> List (PyBytecode context)
 getRHSBytecode context (MkPyRHSConst c prf) = [LOAD_CONST c prf]
 getRHSBytecode context (MkPyRHSVar (MkPyVarHandle v prf)) = [LOAD_FAST_CHECK v prf]
@@ -173,10 +157,17 @@ getInstructionLength (STORE_FAST v prf) = 2
 getInstructionLength RETURN = 2
 getInstructionLength (BINARY_OP op) = 4
 getInstructionLength (JUMP_FORWARD cnt) = 2
+getInstructionLength (JUMP_BACKWARD cnt) = 2
 getInstructionLength (POP_JUMP_IF_FALSE cnt) = 2
+getInstructionLength (PUSH_NULL) = 2
+getInstructionLength (CALL) = 8
+getInstructionLength (POP_TOP) = 2
 
 getInstrListLen : List (PyBytecode _) -> Nat
 getInstrListLen xs = sum (map getInstructionLength xs)
+
+getBytecodeOffset : List (PyBytecode _) -> Nat
+getBytecodeOffset xs = (getInstrListLen xs) `div` 2
 
 turnToBytecode : (context : PyContext) -> PyOperation a context -> (a, List (PyBytecode context))
 turnToBytecode context (PyLoadConst c {prf}) = (MkPyRHSConst c prf, [])
@@ -185,11 +176,19 @@ turnToBytecode context (PyReturn rhs) = ((), getRHSBytecode context rhs ++ [RETU
 turnToBytecode context (PyAssignToVar (MkPyVarHandle v prf) rhs) = ((), getRHSBytecode context rhs ++ [STORE_FAST v prf])
 turnToBytecode context (PyIf cond true_op false_op) = let (_, true_comp) = turnToBytecode context true_op
                                                           (_, false_comp) = turnToBytecode context false_op
-                                                          true_comp' = true_comp ++ [JUMP_FORWARD (getInstrListLen false_comp `div` 2)]
+                                                          true_comp' = true_comp ++ [JUMP_FORWARD (getBytecodeOffset false_comp)]
                                                       in ((), getRHSBytecode context cond ++
-                                                              [POP_JUMP_IF_FALSE (getInstrListLen true_comp' `div` 2)] ++ 
+                                                              [POP_JUMP_IF_FALSE (getBytecodeOffset true_comp')] ++ 
                                                               true_comp' ++
                                                               false_comp)
+turnToBytecode context (PyWhile cond op) = let (_, while_comp) = turnToBytecode context op
+                                               compare_op = getRHSBytecode context cond
+                                               while_comp' = while_comp ++ compare_op ++ [POP_JUMP_IF_FALSE 1]
+                                               while_comp_with_back = while_comp' ++ [JUMP_BACKWARD $ S (getBytecodeOffset while_comp')]
+                                           in ((), compare_op ++
+                                                   [POP_JUMP_IF_FALSE (getBytecodeOffset while_comp_with_back)] ++
+                                                   while_comp_with_back)
+turnToBytecode context (PyPrint rhs {prf}) = ((), [PUSH_NULL, LOAD_FAST_CHECK "print" prf] ++ getRHSBytecode context rhs ++ [CALL, POP_TOP])
 turnToBytecode context (Pure x) = (x, [])
 turnToBytecode context (x >>= f) = let (a', code) = turnToBytecode context x in appendBytecode (turnToBytecode context (f a')) code
 turnToBytecode context (x >> y) = let (a', code) = turnToBytecode context x in appendBytecode (turnToBytecode context y) code
@@ -215,7 +214,11 @@ serializeSingleInstruction (BINARY_OP GT) = [0x6b, 0x44, 0x00, 0x00]
 serializeSingleInstruction (BINARY_OP LT) = [0x6b, 0x02, 0x00, 0x00]
 serializeSingleInstruction (BINARY_OP EQ) = [0x6b, 0x28, 0x00, 0x00]
 serializeSingleInstruction (JUMP_FORWARD cnt) = [0x6e, cast cnt]
+serializeSingleInstruction (JUMP_BACKWARD cnt) = [0x8c, cast cnt]
 serializeSingleInstruction (POP_JUMP_IF_FALSE cnt) = [0x72, cast cnt]
+serializeSingleInstruction (PUSH_NULL) = [0x02, 0x00]
+serializeSingleInstruction (CALL) = [0xab, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+serializeSingleInstruction (POP_TOP) = [0x01, 0x00]
 
 instrLenProof : (bc : PyBytecode _) -> (length (serializeSingleInstruction bc)) = (getInstructionLength bc)
 instrLenProof RESUME = Refl
@@ -231,7 +234,11 @@ instrLenProof (BINARY_OP GT) = Refl
 instrLenProof (BINARY_OP LT) = Refl
 instrLenProof (BINARY_OP EQ) = Refl
 instrLenProof (JUMP_FORWARD cnt) = Refl
+instrLenProof (JUMP_BACKWARD cnt) = Refl
 instrLenProof (POP_JUMP_IF_FALSE cnt) = Refl
+instrLenProof (PUSH_NULL) = Refl
+instrLenProof (CALL) = Refl
+instrLenProof (POP_TOP) = Refl
 
 createBinary : List (PyBytecode _) -> List Bits8
 createBinary [] = []
@@ -262,7 +269,6 @@ init v c = do v' <- PyLoadVar v
 Cast (PyVarHandle context) (PyRHS context) where
   cast h = MkPyRHSVar h
 
--- PyIf : (cond : PyRHS context) -> (true_op : PyOperation () context) -> (false_op : PyOperation () context) -> PyOperation () context
 doif : (cond : PyRHS context) -> (true_op : PyOperation () context) -> (false_op : PyOperation () context) -> PyOperation () context
 doif cond true_op false_op = PyIf cond true_op false_op
 
@@ -297,28 +303,40 @@ private infix 9 .//
 return : Cast a (PyRHS context) => a -> PyOperation () context
 return x = PyReturn (cast x)
 
+while : (cond : PyRHS context) -> (op : PyOperation () context) -> PyOperation () context
+while cond op = PyWhile cond op
+
+print : Cast a (PyRHS context) => a -> {auto printprf : Elem "print" (getVarStringVect (vars context))} -> PyOperation () context
+print x = PyPrint (cast x)
+
 ctx : PyContext
 ctx = MkPyContext ["c1" -= 10,
-                   "c2" -= 20] [MkPyVar "v1"]
+                   "c2" -= 10000] [MkPyVar "v1", MkPyVar "print"]
 
 program = MkPyProgram ctx $ do c1 <- initConst "c1"
                                c2 <- initConst "c2"
                                v1 <- init "v1" c1
-                               doif (c1) (v1 .= c1 .* c2) (v1 .= c1 .- c2)
+                               while (v1 .< c2) (do print v1
+                                                    v1 .= v1 .+ v1)
                                return v1
+
+containsDuplicate : Eq a => (xs : Vect n a) -> Bool
+containsDuplicate [] = False
+containsDuplicate (x :: xs) = (containsDuplicate xs) || (hasAny [x] xs)
+
+data TestUnique : Type where
+  MkUnique : Eq a => (xs : Vect n a) -> {auto prf : containsDuplicate xs = False} -> TestUnique
+
+getVarName : PyVar -> String
+getVarName (MkPyVar str) = str
+
+getConstName : PyConst -> String
+getConstName (MkPyConst name _) = name
+
+uniqueProof = MkUnique ((map getConstName $ consts ctx) ++ (map getVarName $ vars ctx))
 
 public export
 main : IO ()
 main = let ((MkPyContext consts vars), compiled) = compile program
            binaryInstr = createBinary compiled
        in putStrLn (show (serializeWithFlag $ MkPyCodeObject 0 0 0 2 3 binaryInstr consts (map (\(MkPyVar s) => s) vars) vars (map (const 0x20) vars) "<string>" "func" "func" 1 [] []))
-
-  -- containsDuplicate : (xs : Vect n Nat) -> Bool
-  -- containsDuplicate [] = False
-  -- containsDuplicate (x :: xs) = (containsDuplicate xs) || (hasAny [x] xs)
-  -- 
-  -- data TestUnique : Type where
-  --   MkTestUnique : (xs : Vect n Nat) -> {auto prf : containsDuplicate xs = False} -> TestUnique
-  -- 
-  -- lol = MkTestUnique [1, 2]
-
